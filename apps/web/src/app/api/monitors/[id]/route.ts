@@ -4,6 +4,7 @@ import { db, monitors } from '@pingkit/db'
 import { eq, and } from 'drizzle-orm'
 import { requireAuth, getWorkspace } from '@/lib/auth'
 import { enforceInterval } from '@/lib/tier'
+import { scheduleMonitorJob, removeMonitorJob } from '@/lib/queue-client'
 
 const updateSchema = z.object({
   name: z.string().min(1).max(100).optional(),
@@ -65,6 +66,25 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       .where(and(eq(monitors.id, id), eq(monitors.workspaceId, workspace.id)))
       .returning()
 
+    // If interval or URL changed, reschedule the BullMQ job
+    if (parsed.data.intervalSeconds || parsed.data.url || parsed.data.type) {
+      try {
+        await removeMonitorJob(id)
+        if (updated.status !== 'paused') {
+          await scheduleMonitorJob({
+            id: updated.id,
+            url: updated.url,
+            type: updated.type as 'http' | 'tcp' | 'keyword',
+            intervalSeconds: updated.intervalSeconds,
+            timeoutMs: updated.timeoutMs,
+            keywordValue: updated.keywordValue ?? undefined,
+          })
+        }
+      } catch (queueErr) {
+        console.error('Failed to reschedule BullMQ job after monitor update:', queueErr)
+      }
+    }
+
     return NextResponse.json(updated)
   } catch (err: any) {
     if (err?.message === 'NEXT_REDIRECT') throw err
@@ -84,6 +104,13 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     await db.delete(monitors).where(
       and(eq(monitors.id, id), eq(monitors.workspaceId, workspace.id))
     )
+
+    // Clean up the BullMQ job so the checker doesn't attempt checks on deleted monitors
+    try {
+      await removeMonitorJob(id)
+    } catch (queueErr) {
+      console.error('Failed to remove BullMQ job for deleted monitor:', queueErr)
+    }
 
     return NextResponse.json({ success: true })
   } catch (err: any) {

@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { db, alertChannels } from '@pingkit/db'
 import { eq } from 'drizzle-orm'
 import { requireAuth, getWorkspace } from '@/lib/auth'
+import { rateLimit, LIMITS } from '@/lib/rate-limit'
 
 const createChannelSchema = z.object({
   type: z.enum(['email', 'slack', 'discord', 'pagerduty']),
@@ -36,6 +37,15 @@ export async function POST(req: NextRequest) {
   try {
     const session = await requireAuth()
     const workspace = await getWorkspace(session.user.id)
+
+    // SEC-002: Rate limit alert channel creation per user
+    const rl = rateLimit(`alert-channel-create:${session.user.id}`, LIMITS.alertChannelCreate)
+    if (!rl.success) {
+      return NextResponse.json(
+        { error: 'Too many requests. Please try again later.' },
+        { status: 429, headers: { 'Retry-After': String(Math.ceil((rl.resetAt - Date.now()) / 1000)) } }
+      )
+    }
 
     const body = await req.json()
     const parsed = createChannelSchema.safeParse(body)

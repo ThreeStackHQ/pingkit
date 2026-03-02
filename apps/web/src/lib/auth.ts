@@ -1,3 +1,5 @@
+// Ensure env validation runs at server startup — will throw if required vars are missing
+import '@/lib/env'
 import NextAuth, { type DefaultSession } from 'next-auth'
 import Google from 'next-auth/providers/google'
 import Resend from 'next-auth/providers/resend'

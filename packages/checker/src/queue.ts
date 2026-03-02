@@ -1,4 +1,5 @@
 import { Queue } from 'bullmq'
+import { z } from 'zod'
 
 // Use connection options instead of IORedis instance to avoid version conflicts
 function getRedisConnection() {
@@ -15,14 +16,17 @@ export const connection = getRedisConnection()
 
 export const checkQueue = new Queue('monitor-checks', { connection })
 
-export type CheckJobData = {
-  monitorId: string
-  url: string
-  type: 'http' | 'tcp' | 'keyword'
-  timeoutMs: number
-  keywordValue?: string
-  region: string
-}
+// SEC-004: Zod schema for BullMQ job data — validated at worker ingestion time
+export const checkJobDataSchema = z.object({
+  monitorId: z.string().min(1),
+  url: z.string().url(),
+  type: z.enum(['http', 'tcp', 'keyword']),
+  timeoutMs: z.number().int().min(1000).max(60000),
+  keywordValue: z.string().optional(),
+  region: z.string().min(1),
+})
+
+export type CheckJobData = z.infer<typeof checkJobDataSchema>
 
 export interface MonitorConfig {
   id: string

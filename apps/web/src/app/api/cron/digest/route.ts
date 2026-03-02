@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db, workspaces, monitors, checks, incidents, users } from '@pingkit/db'
-import { eq, and, gte, avg, count, desc } from 'drizzle-orm'
+import { eq, and, gte, avg, count, desc, inArray } from 'drizzle-orm'
 import { Resend } from 'resend'
+import { escapeHtml } from '@/lib/escape-html'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -36,26 +37,24 @@ export async function GET(req: NextRequest) {
 
       const monitorIds = workspaceMonitors.map(m => m.id)
 
-      // Count incidents this week
-      const weeklyIncidents = await db.query.incidents.findMany({
+      // BUG-002: Filter incidents by monitorId in DB, not in memory across all workspaces
+      const workspaceIncidents = await db.query.incidents.findMany({
         where: and(
+          inArray(incidents.monitorId, monitorIds),
           gte(incidents.startedAt, weekAgo),
         ),
-        with: { monitor: { columns: { workspaceId: true, name: true } } },
       })
 
-      const workspaceIncidents = weeklyIncidents.filter(
-        i => monitorIds.includes(i.monitorId)
-      )
-
       // Build monitor stats HTML rows
+      // SEC-001: escape monitor names before embedding in HTML
       const monitorRows = workspaceMonitors.map(m => {
         const uptime = m.uptime7d?.toFixed(2) ?? '100.00'
         const avgMs = m.avgResponseMs ?? 0
         const status = m.status === 'up' ? '🟢' : m.status === 'down' ? '🔴' : '⚪'
+        const safeName = escapeHtml(m.name)
         return `
           <tr>
-            <td style="padding:8px;border-bottom:1px solid #e5e7eb;">${status} ${m.name}</td>
+            <td style="padding:8px;border-bottom:1px solid #e5e7eb;">${status} ${safeName}</td>
             <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:center;">${uptime}%</td>
             <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:center;">${avgMs}ms</td>
           </tr>`
@@ -68,7 +67,7 @@ export async function GET(req: NextRequest) {
         .slice(0, 3)
 
       const slowestList = slowest.length > 0
-        ? slowest.map(m => `<li>${m.name}: ${m.avgResponseMs}ms avg</li>`).join('')
+        ? slowest.map(m => `<li>${escapeHtml(m.name)}: ${m.avgResponseMs}ms avg</li>`).join('')
         : '<li>No slow monitors this week 🎉</li>'
 
       const html = `

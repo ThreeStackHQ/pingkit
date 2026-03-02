@@ -4,6 +4,7 @@ import { db, alertChannels } from '@pingkit/db'
 import { eq, and } from 'drizzle-orm'
 import { requireAuth, getWorkspace } from '@/lib/auth'
 import { Resend } from 'resend'
+import { rateLimit, LIMITS } from '@/lib/rate-limit'
 
 const updateSchema = z.object({
   name: z.string().min(1).max(100).optional(),
@@ -72,6 +73,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const session = await requireAuth()
     const workspace = await getWorkspace(session.user.id)
     const { id } = await params
+
+    // SEC-002: Rate limit test alert sends per user
+    const rl = rateLimit(`alert-test:${session.user.id}`, LIMITS.alertTest)
+    if (!rl.success) {
+      return NextResponse.json(
+        { error: 'Too many test alerts. Please try again shortly.' },
+        { status: 429, headers: { 'Retry-After': String(Math.ceil((rl.resetAt - Date.now()) / 1000)) } }
+      )
+    }
 
     const url = new URL(req.url)
     if (!url.pathname.endsWith('/test')) {

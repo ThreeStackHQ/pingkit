@@ -14,7 +14,8 @@ const envSchema = z.object({
   STRIPE_PRICE_STARTER: z.string().optional(),
   STRIPE_PRICE_PRO: z.string().optional(),
   NEXT_PUBLIC_APP_URL: z.string().url(),
-  CRON_SECRET: z.string().min(1).optional(),
+  // SEC-003: CRON_SECRET must be set to protect cron endpoints from unauthorized access
+  CRON_SECRET: z.string().min(32, 'CRON_SECRET must be at least 32 characters for adequate entropy'),
 })
 
 export const env = envSchema.parse(process.env)

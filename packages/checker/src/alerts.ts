@@ -6,6 +6,16 @@ const resend = new Resend(process.env.RESEND_API_KEY)
 const FROM = process.env.RESEND_FROM_EMAIL ?? 'alerts@pingkit.threestack.io'
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://pingkit.threestack.io'
 
+/** SEC-001: Escape HTML special characters to prevent XSS in email templates. */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;')
+}
+
 async function getChannels(workspaceId: string) {
   return db.query.alertChannels.findMany({
     where: and(
@@ -76,6 +86,10 @@ export async function triggerAlerts(monitorId: string, incidentId: string) {
 
   const channels = await getChannels(monitor.workspaceId)
 
+  // SEC-001: escape monitor name and URL before embedding in HTML
+  const safeName = escapeHtml(monitor.name)
+  const safeUrl = escapeHtml(monitor.url)
+
   for (const channel of channels) {
     try {
       const alreadySent = await wasRecentlyAlerted(incidentId, channel.id)
@@ -91,8 +105,8 @@ export async function triggerAlerts(monitorId: string, incidentId: string) {
           subject: `🔴 ${monitor.name} is DOWN`,
           html: `
             <h2 style="color:#ef4444;">⚠️ Monitor Down Alert</h2>
-            <p><strong>${monitor.name}</strong> is currently <strong>DOWN</strong>.</p>
-            <p><strong>URL:</strong> ${monitor.url}</p>
+            <p><strong>${safeName}</strong> is currently <strong>DOWN</strong>.</p>
+            <p><strong>URL:</strong> ${safeUrl}</p>
             <p><strong>Time:</strong> ${new Date().toISOString()}</p>
             <p><a href="${APP_URL}/dashboard">View in PingKit →</a></p>
           `,
@@ -135,6 +149,10 @@ export async function triggerRecovery(monitorId: string, incidentId: string) {
 
   const channels = await getChannels(monitor.workspaceId)
 
+  // SEC-001: escape monitor name and URL before embedding in HTML
+  const safeName = escapeHtml(monitor.name)
+  const safeUrl = escapeHtml(monitor.url)
+
   for (const channel of channels) {
     try {
       if (channel.type === 'email' && channel.email) {
@@ -144,8 +162,8 @@ export async function triggerRecovery(monitorId: string, incidentId: string) {
           subject: `✅ ${monitor.name} is back UP`,
           html: `
             <h2 style="color:#10b981;">✅ Monitor Recovered</h2>
-            <p><strong>${monitor.name}</strong> is back <strong>UP</strong>.</p>
-            <p><strong>URL:</strong> ${monitor.url}</p>
+            <p><strong>${safeName}</strong> is back <strong>UP</strong>.</p>
+            <p><strong>URL:</strong> ${safeUrl}</p>
             <p><strong>Recovered at:</strong> ${new Date().toISOString()}</p>
             <p><a href="${APP_URL}/dashboard">View in PingKit →</a></p>
           `,

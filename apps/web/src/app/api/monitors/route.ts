@@ -4,6 +4,8 @@ import { db, monitors } from '@pingkit/db'
 import { eq } from 'drizzle-orm'
 import { requireAuth, getWorkspace } from '@/lib/auth'
 import { canAddMonitor, enforceInterval } from '@/lib/tier'
+import { rateLimit, LIMITS } from '@/lib/rate-limit'
+import { scheduleMonitorJob } from '@/lib/queue-client'
 
 const createMonitorSchema = z.object({
   name: z.string().min(1).max(100),
@@ -37,6 +39,15 @@ export async function POST(req: NextRequest) {
     const session = await requireAuth()
     const workspace = await getWorkspace(session.user.id)
 
+    // SEC-002: Rate limit monitor creation per user
+    const rl = rateLimit(`monitor-create:${session.user.id}`, LIMITS.monitorCreate)
+    if (!rl.success) {
+      return NextResponse.json(
+        { error: 'Too many requests. Please try again later.' },
+        { status: 429, headers: { 'Retry-After': String(Math.ceil((rl.resetAt - Date.now()) / 1000)) } }
+      )
+    }
+
     const body = await req.json()
     const parsed = createMonitorSchema.safeParse(body)
     if (!parsed.success) {
@@ -67,6 +78,21 @@ export async function POST(req: NextRequest) {
       expectedStatusCode: parsed.data.expectedStatusCode ?? 200,
       status: 'pending',
     }).returning()
+
+    // BUG-004: Immediately schedule the BullMQ job instead of waiting for reconcile
+    try {
+      await scheduleMonitorJob({
+        id: monitor.id,
+        url: monitor.url,
+        type: monitor.type as 'http' | 'tcp' | 'keyword',
+        intervalSeconds: monitor.intervalSeconds,
+        timeoutMs: monitor.timeoutMs,
+        keywordValue: monitor.keywordValue ?? undefined,
+      })
+    } catch (queueErr) {
+      // Non-fatal: checker reconcile will pick it up within 5 minutes
+      console.error('Failed to immediately schedule monitor job:', queueErr)
+    }
 
     return NextResponse.json(monitor, { status: 201 })
   } catch (err: any) {

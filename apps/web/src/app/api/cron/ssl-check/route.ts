@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db, monitors, incidents, alertChannels, alertHistory } from '@pingkit/db'
-import { eq, and, isNull, inArray } from 'drizzle-orm'
+import { db, monitors, incidents, alertChannels, alertHistory, sslChecks } from '@pingkit/db'
+import { eq, and, isNull } from 'drizzle-orm'
 import * as tls from 'tls'
 import { Resend } from 'resend'
+import { escapeHtml } from '@/lib/escape-html'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-function checkSslExpiry(hostname: string, port = 443): Promise<{ daysUntilExpiry: number; expiresAt: Date }> {
+function checkSslExpiry(hostname: string, port = 443): Promise<{ daysUntilExpiry: number; expiresAt: Date; issuer: string }> {
   return new Promise((resolve, reject) => {
     const socket = tls.connect({ host: hostname, port, servername: hostname, timeout: 10000 }, () => {
       const cert = socket.getPeerCertificate()
@@ -18,7 +19,8 @@ function checkSslExpiry(hostname: string, port = 443): Promise<{ daysUntilExpiry
       }
       const expiresAt = new Date(cert.valid_to)
       const daysUntilExpiry = Math.floor((expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-      resolve({ daysUntilExpiry, expiresAt })
+      const issuer = cert.issuer?.O ?? cert.issuer?.CN ?? 'Unknown'
+      resolve({ daysUntilExpiry, expiresAt, issuer })
     })
     socket.on('error', reject)
     socket.on('timeout', () => { socket.destroy(); reject(new Error('TLS connection timed out')) })
@@ -51,8 +53,16 @@ export async function GET(req: NextRequest) {
   for (const monitor of proMonitors) {
     try {
       const hostname = new URL(monitor.url).hostname
-      const { daysUntilExpiry, expiresAt } = await checkSslExpiry(hostname)
+      const { daysUntilExpiry, expiresAt, issuer } = await checkSslExpiry(hostname)
       results.push({ monitorId: monitor.id, daysUntilExpiry })
+
+      // BUG-001: persist SSL check result to sslChecks table
+      await db.insert(sslChecks).values({
+        monitorId: monitor.id,
+        expiresAt,
+        issuer,
+        daysUntilExpiry,
+      })
 
       const warningThresholds = [30, 14, 7]
       const shouldAlert = warningThresholds.includes(daysUntilExpiry)
@@ -83,6 +93,10 @@ export async function GET(req: NextRequest) {
           ),
         })
 
+        // SEC-001: escape monitor name and URL before embedding in HTML
+        const safeName = escapeHtml(monitor.name)
+        const safeUrl = escapeHtml(monitor.url)
+
         for (const channel of channels) {
           if (channel.type === 'email' && channel.email) {
             try {
@@ -92,7 +106,7 @@ export async function GET(req: NextRequest) {
                 subject: `⚠️ SSL Certificate expires in ${daysUntilExpiry} days — ${monitor.name}`,
                 html: `
                   <h2>SSL Certificate Warning</h2>
-                  <p>The SSL certificate for <strong>${monitor.name}</strong> (${monitor.url}) will expire in <strong>${daysUntilExpiry} days</strong> on ${expiresAt.toLocaleDateString()}.</p>
+                  <p>The SSL certificate for <strong>${safeName}</strong> (${safeUrl}) will expire in <strong>${daysUntilExpiry} days</strong> on ${escapeHtml(expiresAt.toLocaleDateString())}.</p>
                   <p>Please renew your certificate to avoid downtime.</p>
                   <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard">View in PingKit →</a></p>
                 `,

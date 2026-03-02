@@ -2,7 +2,7 @@ import * as net from 'net'
 import { Worker, type Job } from 'bullmq'
 import { db, monitors, checks, incidents } from '@pingkit/db'
 import { eq, and, isNull, desc, ne } from 'drizzle-orm'
-import { connection, checkQueue, addMonitorJob, removeMonitorJob, type CheckJobData } from './queue.js'
+import { connection, checkQueue, addMonitorJob, removeMonitorJob, type CheckJobData, checkJobDataSchema } from './queue.js'
 import { triggerAlerts, triggerRecovery } from './alerts.js'
 
 const REGION = process.env.CHECKER_REGION ?? 'eu'
@@ -126,7 +126,7 @@ async function processMonitorCheck(jobData: CheckJobData) {
   // Get current monitor state
   const monitor = await db.query.monitors.findFirst({
     where: eq(monitors.id, monitorId),
-    columns: { id: true, status: true, workspaceId: true, avgResponseMs: true },
+    columns: { id: true, status: true, workspaceId: true, avgResponseMs: true, uptime7d: true, uptime30d: true, uptime90d: true },
   })
   if (!monitor) return
 
@@ -152,10 +152,26 @@ async function processMonitorCheck(jobData: CheckJobData) {
     ? Math.round((monitor.avgResponseMs * 0.9) + (checkResult.responseMs * 0.1))
     : checkResult.responseMs
 
+  // BUG-003: uptime fields were never updated — compute rolling EMA uptime
+  // EMA decay: 7d ≈ α=0.001 per check at 60s interval, 30d ≈ α=0.0003, 90d ≈ α=0.0001
+  const uptimeSample = newStatus === 'up' ? 100.0 : 0.0
+  const newUptime7d = monitor.uptime7d != null
+    ? Number((monitor.uptime7d * 0.998 + uptimeSample * 0.002).toFixed(4))
+    : uptimeSample
+  const newUptime30d = monitor.uptime30d != null
+    ? Number((monitor.uptime30d * 0.9995 + uptimeSample * 0.0005).toFixed(4))
+    : uptimeSample
+  const newUptime90d = monitor.uptime90d != null
+    ? Number((monitor.uptime90d * 0.9998 + uptimeSample * 0.0002).toFixed(4))
+    : uptimeSample
+
   await db.update(monitors)
     .set({
       status: newStatus as 'up' | 'down' | 'paused' | 'pending',
       avgResponseMs: newAvg,
+      uptime7d: newUptime7d,
+      uptime30d: newUptime30d,
+      uptime90d: newUptime90d,
       lastCheckedAt: new Date(),
       updatedAt: new Date(),
     })
@@ -192,7 +208,13 @@ async function processMonitorCheck(jobData: CheckJobData) {
 const worker = new Worker<CheckJobData>(
   'monitor-checks',
   async (job: Job<CheckJobData>) => {
-    await processMonitorCheck(job.data)
+    // SEC-004: Validate BullMQ job data with Zod before processing to prevent malformed jobs
+    const parsed = checkJobDataSchema.safeParse(job.data)
+    if (!parsed.success) {
+      console.error(`❌ Invalid job data for job ${job.id}:`, parsed.error.issues)
+      throw new Error(`Invalid job data: ${JSON.stringify(parsed.error.issues)}`)
+    }
+    await processMonitorCheck(parsed.data)
   },
   { connection, concurrency: 20 }
 )
