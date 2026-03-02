@@ -11,12 +11,13 @@
   "dependencies": {
     "@pingkit/db": "workspace:*",
     "bullmq": "^5.34.5",
+    "drizzle-orm": "^0.39.1",
     "ioredis": "^5.6.0",
     "resend": "^4.1.2"
   },
   "devDependencies": {
-    "typescript": "^5.7.3",
     "@types/node": "^22.10.10",
-    "tsx": "^4.19.2"
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
   }
 }

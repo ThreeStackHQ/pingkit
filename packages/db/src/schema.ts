@@ -156,3 +156,25 @@ export const incidentsRelations = relations(incidents, ({ many, one }) => ({
   alertHistory: many(alertHistory),
   monitor: one(monitors, { fields: [incidents.monitorId], references: [monitors.id] }),
 }))
+
+export const usersRelations = relations(users, ({ many }) => ({
+  workspaces: many(workspaces),
+}))
+
+export const alertChannelsRelations = relations(alertChannels, ({ one, many }) => ({
+  workspace: one(workspaces, { fields: [alertChannels.workspaceId], references: [workspaces.id] }),
+  alertHistory: many(alertHistory),
+}))
+
+export const alertHistoryRelations = relations(alertHistory, ({ one }) => ({
+  incident: one(incidents, { fields: [alertHistory.incidentId], references: [incidents.id] }),
+  channel: one(alertChannels, { fields: [alertHistory.channelId], references: [alertChannels.id] }),
+}))
+
+export const checksRelations = relations(checks, ({ one }) => ({
+  monitor: one(monitors, { fields: [checks.monitorId], references: [monitors.id] }),
+}))
+
+export const sslChecksRelations = relations(sslChecks, ({ one }) => ({
+  monitor: one(monitors, { fields: [sslChecks.monitorId], references: [monitors.id] }),
+}))

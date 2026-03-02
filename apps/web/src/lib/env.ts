@@ -14,6 +14,7 @@ const envSchema = z.object({
   STRIPE_PRICE_STARTER: z.string().optional(),
   STRIPE_PRICE_PRO: z.string().optional(),
   NEXT_PUBLIC_APP_URL: z.string().url(),
+  CRON_SECRET: z.string().min(1).optional(),
 })
 
 export const env = envSchema.parse(process.env)
